@@ -26,8 +26,9 @@ e = k_1 (e_p + \beta e_v)
 $$
 **载荷期望力 (Desired Force for Payload, Eq. 14):**
 $$
-f_{dL} = \sigma(e) + k_2 \sigma(\beta \sigma(e) + e_v) + g c_3 - \ddot{p}_d + M^{-1} (\hat{d}_L + \sum_{i=1}^n \hat{d}_{iq})
+f_{dL} = \sigma(e) + k_2 \sigma(\beta \sigma(e) + e_v) - g c_3 - \ddot{p}_d + M^{-1} (\hat{d}_L + \sum_{i=1}^n \hat{d}_{iq})
 $$
+**注意**：此处应为 **-g c₃**，因为 f_dL 代表期望的**推力加速度**，而动力学方程(Eq. 8)中重力单独添加为 +gc₃。要抵消重力实现悬停，推力加速度需为 -gc₃。
 
 ### 力分配 (Force Distribution, Eq. 17 & 18)
 **期望平行分量:**

@@ -16,7 +16,7 @@ end
 eq_norm = zeros(n, len);
 
 for k = 1:len
-    [~, ~, ~, ~, q_k, ~, ~, ~] = unpack_state(x(k,:)', n);
+    [~, ~, ~, q_k, ~, ~, ~] = unpack_state(x(k,:)', n);
     for i = 1:n
         eq_norm(i,k) = norm(q_k(:,i) - q_di_all(:,i));
     end

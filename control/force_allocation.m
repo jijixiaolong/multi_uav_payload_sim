@@ -1,45 +1,36 @@
-function [f_qdi, u] = force_allocation(x, params, f_dL)
-% FORCE_ALLOCATION Force allocation (Eq 17, 18)
-%   Calculates the desired parallel force component f_qdi for each quadrotor.
+function f_qdi = force_allocation(params, f_dL, q, omega)
+% FORCE_ALLOCATION 力分配 (论文公式 Eq 17, 18)
+%   将负载期望力 f_dL 分配到各缆绳的平行分量 f_qdi
 %
-%   Inputs:
-%   x: State vector
-%   params: Parameters
-%   f_dL: Desired payload force
+%   输入:
+%   params: 参数结构体 (mL, mi, li)
+%   f_dL:   负载期望力 (3×1)，来自 payload_ctrl
+%   q:      缆绳方向单位向量 (3×n)
+%   omega:  缆绳角速度 (3×n)
 %
-%   Outputs:
-%   f_qdi: 3xn desired parallel forces
-%   u: Auxiliary force allocation
+%   输出:
+%   f_qdi:  各缆绳期望平行力 (3×n)
 
-n = params.n;
-[~, ~, ~, ~, q, omega, ~, ~] = unpack_state(x, n);
+% 辅助力分配 u (Eq 18)
+% u = mL * Q^T * (Q*Q^T)^(-1) * f_dL
+% 用于确保所有缆绳力的合力等于期望力 f_dL
+reg = params.force_alloc_reg;
+QQt = q * q' + reg * eye(3);            % Q*Q^T + 正则化防止病态
+u = params.mL * q' * (QQt \ f_dL);      % n×1: 各缆绳的辅助力大小
 
-% Auxiliary force u (Eq 18)
-% u = mL * Q' * (Q*Q')^-1 * f_dL
-Q = q; % 3xn
+% 期望平行力 f_qdi (Eq 17) - 向量化计算
+% 公式: f_qdi = mi*li*||ω_i||²*q_i - mi*(q_i^T*f_dL)*q_i - u_i*q_i
+% 提取公因子: f_qdi = coeff_i * q_i
+%   其中 coeff_i = mi*li*||ω_i||² - mi*(q_i^T*f_dL) - u_i
 
-% Check rank of Q
-if rank(Q) < 3
-    warning('force_allocation: Q is singular (rank < 3). Pseudo-inverse used.');
-end
+omega_norm_sq = sum(omega.^2, 1);       % 1×n: 各缆绳角速度模方 ||ω_i||²
+f_dL_proj = sum(q .* f_dL, 1);          % 1×n: f_dL 在各缆绳方向的投影 q_i^T*f_dL
 
-% u vector (nx1)
-% Note: The formula in paper is u = mL * Q' * (Q*Q')^-1 * f_dL
-% This distributes the force required for the payload mass mL.
-% Wait, Eq 16 says sum(...) = -M * f_dL
-% And Problem 2 says sum(...) = -M * f_dL
-% And sum(...) = -mL * f_dL - sum(mi * qi * qi' * f_dL) + sum(mi * li * |w|^2 * qi) - sum(u_i * qi)
-% So we need sum(u_i * qi) = mL * f_dL
-% The solution u = mL * Q' * (Q*Q')^-1 * f_dL satisfies Q * u = mL * f_dL.
+% 合并系数 (1×n)
+coeff = params.mi * params.li * omega_norm_sq ...   % 离心力补偿项
+      - params.mi * f_dL_proj ...                   % 负载力分配项
+      - u';                                         % 辅助力修正项
 
-u = params.mL * Q' * ((Q * Q') \ f_dL);
-
-f_qdi = zeros(3, n);
-for i = 1:n
-    term1 = params.mi * params.li * norm(omega(:,i))^2 * q(:,i);
-    term2 = -params.mi * (q(:,i) * q(:,i)') * f_dL;
-    term3 = -u(i) * q(:,i);
-
-    f_qdi(:,i) = term1 + term2 + term3;
-end
+% 各缆绳期望平行力 = 系数 × 缆绳方向
+f_qdi = q .* coeff;                     % 3×n: 逐列相乘
 end

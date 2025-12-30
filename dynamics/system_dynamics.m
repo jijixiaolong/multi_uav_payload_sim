@@ -1,155 +1,142 @@
 function dx = system_dynamics(t, x, params)
-% SYSTEM_DYNAMICS Complete state differential dx = f(x,u)
+% SYSTEM_DYNAMICS 完整系统状态微分 dx = f(x,u)
 %
-%   Inputs:
-%   t: Time
-%   x: State vector
-%   params: Parameter structure
+%   输入:
+%   t: 时间
+%   x: 状态向量
+%   params: 参数结构体
 %
-%   Output:
-%   dx: State derivative
+%   输出:
+%   dx: 状态导数
 
-% Unpack state
+% 解包状态（状态中不包含 Omega）
 n = params.n;
-[pL, vL, R, Omega, q, omega, dL_hat, d_hat] = unpack_state(x, n);
 
-% Get control inputs
-% Note: In a real simulation, control would be calculated here or passed in.
-% For now, we assume a control function exists or we calculate it here.
-% To keep it modular, we'll call the control module.
-% However, since ode45 requires a function of (t,x), we need to compute
-% control inside here.
+% 检查输入状态是否有 NaN 或 Inf（ODE 求解器可能在探索时产生）
+if any(~isfinite(x))
+    % 返回零导数，让 ODE 求解器减小步长
+    dx = zeros(size(x));
+    return;
+end
 
-% Desired trajectory
+[pL, vL, R, q, omega, dL_hat, d_hat] = unpack_state(x, n);
+
+% 保持旋转矩阵正交，抑制积分漂移导致的数值爆炸
+R = reorthonormalize_R(R);
+
+% 归一化每根缆绳方向，防止数值漂移（向量化）
+q_norms = sqrt(sum(q.^2, 1));
+% 防止除以零
+q_norms(q_norms < 1e-10) = 1;
+q = q ./ q_norms;
+
+% 期望轨迹与高阶导数
 [pd, dpd, d2pd, d3pd, d4pd] = trajectory(t);
 
-% Control Law Calculation
-% 1. Payload Control -> f_dL
-% 2. Force Allocation -> f_qdi
-% 3. Cable Control -> f_di_perp
-% 4. Attitude Control -> T_i, Omega_i (This is the input to dynamics)
+% 预计算矩阵 M（向量化计算）
 
-% Ideally, we should have a separate function `controller(t, x, params)`
-% that returns the actual inputs T and Omega_ref (or moments).
-% But the paper's control law gives Omega_i directly as a kinematic input
-% for attitude, or we assume we track Omega_i perfectly?
-% The paper says: "controlling the vehicle's attitude through angular velocity actuation"
-% Eq (1c) is R_dot = R * S(Omega).
-% The control law (Eq 33) designs Omega_i.
-% So Omega_i is the input.
+M = params.mL * eye(3) + params.mi * (q * q') + 1e-8 * eye(3);
 
-% Call controller to get Omega and Thrust
-[T, Omega_cmd, dL_hat_dot, d_hat_dot] = controller_wrapper(t, x, params, pd, dpd, d2pd, d3pd, d4pd);
+% 调用控制器（传递所有预解包的状态变量，避免重复 unpack_state）
+% 控制器返回：
+% T: 各机推力大小 (1xn)
+% Omega_cmd: 命令角速度 (3xn)
+% dL_hat_dot, d_hat_dot: 扰动估计导数
+[T, Omega_cmd, dL_hat_dot, d_hat_dot] = controller_wrapper(params, pd, dpd, d2pd, d3pd, d4pd, M, pL, vL, R, q, omega, dL_hat, d_hat);
 
-% Dynamics Calculation
+% 动力学计算
 
-% 1. Payload Dynamics (Eq 8)
-% Need to calculate f_iq = (q_i' * f_i) * q_i
-% f_i = -T_i * R_i * e3
+% 1. 载荷动力学 (Eq 8)
+% M * vL_dot = sum( (q_i' * f_i) * q_i ) + d_L + mL * g * e3
+% f_i = -T_i * R_i * e3（推力向量）
 
+% 向量化推力计算
+e3 = [0;0;1];
 f = zeros(3, n);
-f_q = zeros(3, n);
-sum_terms = zeros(3, 1);
-M = params.mL * eye(3);
-
 for i = 1:n
-    f(:,i) = -T(i) * R(:,:,i) * [0;0;1];
-    f_q(:,i) = (q(:,i)' * f(:,i)) * q(:,i);
-
-    % Disturbance on quadrotor (simulated)
-    % For simulation, we need actual disturbance.
-    % Let's assume constant disturbance defined in params or zero.
-    d_i_true = params.d_i_true(:,i);
-    d_iq = (q(:,i)' * d_i_true) * q(:,i);
-
-    term_i = f_q(:,i) + d_iq - params.mi * params.li * norm(omega(:,i))^2 * q(:,i);
-    sum_terms = sum_terms + term_i;
-
-    M = M + params.mi * (q(:,i) * q(:,i)');
+    f(:,i) = -T(i) * R(:,:,i) * e3;
 end
+
+% 向量化力分量计算（无循环）
+% 计算各力在缆绳方向的投影系数: (q_i' * f_i) 和 (q_i' * d_i)
+f_proj = sum(q .* f, 1);                    % 1×n: 推力投影系数
+d_proj = sum(q .* params.d_i_true, 1);      % 1×n: 扰动投影系数
+omega_norm_sq = sum(omega.^2, 1);           % 1×n: ||omega_i||^2
+
+% 合并系数: (f_proj + d_proj - mi*li*||omega||^2)
+mi = params.mi; li = params.li;
+coeff = f_proj + d_proj - mi * li * omega_norm_sq;  % 1×n
+
+% 求和: sum_i(coeff_i * q_i)
+sum_terms = q * coeff';                     % 3×1
 
 d_L_true = params.d_L_true;
 
-dvL = M \ (sum_terms + d_L_true) + params.g * [0;0;1];
+% 按 Eq 8 求解 vL_dot，重力项在逆矩阵外
+% NED 中重力为 [0;0;g]
+dvL = M \ (sum_terms + d_L_true) + params.g * e3;
 dpL = vL;
 
-% 2. Cable Dynamics (Eq 9)
-domega = zeros(3, n);
-dq = zeros(3, n);
+% 2. 缆绳动力学 (Eq 9) - 向量化
+% 利用 cross() 支持批量列计算: S(q)*v = cross(q, v)
 
-for i = 1:n
-    d_i_true = params.d_i_true(:,i);
+g_e3 = params.g * e3;
+dvL_minus_g = dvL - g_e3;
 
-    term1 = (1/params.li) * hat(q(:,i)) * (dvL - params.g * [0;0;1]);
-    term2 = (1/(params.mi * params.li)) * hat(q(:,i)) * (f(:,i) + d_i_true);
+% term1: (1/li) * cross(q_i, dvL_minus_g) 对所有 i
+dvL_minus_g_mat = repmat(dvL_minus_g, 1, n);        % 3×n
+term1_all = (1/li) * cross(q, dvL_minus_g_mat);     % 3×n
 
-    domega(:,i) = term1 - term2;
-    dq(:,i) = hat(omega(:,i)) * q(:,i);
-end
+% term2: (1/(mi*li)) * cross(q_i, f_i + d_i)
+f_plus_d = f + params.d_i_true;                     % 3×n
+term2_all = (1/(mi*li)) * cross(q, f_plus_d);       % 3×n
 
-% 3. Attitude Dynamics (Eq 1c)
+domega = term1_all - term2_all;                     % 3×n: 缆绳角加速度
+dq = cross(omega, q);                               % 3×n: q̇ = ω × q
+
+% 3. 姿态运动学 (Eq 1c)
+% R_dot = R * S(Omega)
+% 这里假设 Omega_cmd 可被完美跟踪
 dR = zeros(3,3,n);
 for i = 1:n
-    % We use the commanded Omega as the actual Omega (assuming perfect low-level control)
-    % or we could add actuator dynamics. The paper seems to treat Omega as input.
     dR(:,:,i) = R(:,:,i) * hat(Omega_cmd(:,i));
 end
 
-% 4. Disturbance Estimation Dynamics (Eq 35, 36)
-% These are calculated in the controller
-
-% Pack derivatives
-dx = pack_state(dpL, dvL, dR, zeros(3,n), dq, domega, dL_hat_dot, d_hat_dot);
-
-% Note: pack_state expects Omega, but here we need dOmega.
-% Since Omega is an input, dOmega is not defined in the state.
-% However, our state vector includes Omega?
-% Let's check unpack_state.
-% x includes Omega.
-% If Omega is an input, we shouldn't integrate it.
-% But usually in these sims, we might have dynamics for Omega.
-% The paper treats Omega as control input.
-% So in the state vector, we might not need Omega if it's purely input.
-% BUT, init_state included it.
-% If we keep it in state, we need its derivative.
-% Since it's an input, we can set dOmega = 0 or use a filter.
-% For now, let's set dOmega = 0 (instantaneous tracking) or remove it from state.
-% Given the structure, let's assume dOmega = 0 for now, effectively holding it constant between steps?
-% No, ode45 integrates.
-% If Omega is input, it shouldn't be in the state vector x that is integrated.
-% It should be an algebraic variable.
-% However, I already defined the state vector to include it.
-% Let's modify pack_state/unpack_state to NOT include Omega if it's an input?
-% Or just set dOmega = 0 and ignore the integrated value, always overwriting it with control?
-% Better: The state should probably NOT include Omega if it's a control input.
-% But let's stick to the current structure and set dOmega = 0.
-% Actually, wait. If Omega is input, why is it in state?
-% Maybe for visualization?
-% Let's set dOmega = 0.
-
-% Re-pack with dOmega = 0
-dx = pack_state(dpL, dvL, dR, zeros(3,n), dq, domega, dL_hat_dot, d_hat_dot);
+% 打包导数（无 Omega 导数）
+dx = pack_state(dpL, dvL, dR, dq, domega, dL_hat_dot, d_hat_dot);
 
 end
 
-function [T, Omega_cmd, dL_hat_dot, d_hat_dot] = controller_wrapper(t, x, params, pd, dpd, d2pd, d3pd, d4pd)
-% Wrapper to call the control functions
-% We need to implement the control logic here or call separate files.
-% To avoid circular dependencies or complex pathing, we can assume the control files are on path.
+function [T, Omega_cmd, dL_hat_dot, d_hat_dot] = controller_wrapper(params, pd, dpd, d2pd, d3pd, d4pd, M, pL, vL, R, q, omega, dL_hat, d_hat)
+% 传递所有预解包的状态变量，避免重复 unpack_state
 
-% Add control path
-addpath(genpath(fullfile(pwd, '..', 'control')));
-addpath(genpath(fullfile(pwd, '..', 'math')));
+% 1. 载荷位置控制
+[f_dL, e, ev] = payload_ctrl(params, pd, dpd, d2pd, M, pL, vL, q, dL_hat, d_hat);
 
-% Call main control function (to be implemented)
-% [T, Omega_cmd, dL_hat_dot, d_hat_dot] = full_controller(t, x, params, ...);
+% 2. 力分配
+f_qdi = force_allocation(params, f_dL, q, omega);
 
-% For now, return dummy values to allow testing dynamics
-n = params.n;
-T = ones(n, 1) * params.mi * 9.81; % Hover thrust approx
-Omega_cmd = zeros(3, n);
-dL_hat_dot = zeros(3, 1);
-d_hat_dot = zeros(3, n);
+% 3. 缆绳姿态控制
+[f_di_perp, omega_di, dot_omega_di, e_qi, e_omega_i] = cable_ctrl(params, f_dL, e, ev, dpd, d2pd, d3pd, q, omega, d_hat);
 
-% We will replace this with actual control calls later.
+% 4. 姿态控制
+[Omega_cmd, T] = attitude_ctrl(params, f_qdi, f_di_perp, omega_di, dot_omega_di, e_qi, e_omega_i, ev, e, M, R, q, omega);
+
+% 5. 扰动估计
+[dL_hat_dot, d_hat_dot] = disturbance_est(params, e, ev, e_omega_i, M, q, omega, dL_hat, d_hat);
+end
+
+function R_out = reorthonormalize_R(R_in)
+% 使用极分解保持旋转矩阵正交，防止长期仿真时的漂移
+n = size(R_in, 3);
+R_out = R_in;
+for i = 1:n
+    [U, ~, V] = svd(R_in(:,:,i));
+    Ri = U * V';
+    if det(Ri) < 0
+        U(:,3) = -U(:,3);
+        Ri = U * V';
+    end
+    R_out(:,:,i) = Ri;
+end
 end

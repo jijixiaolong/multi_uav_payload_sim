@@ -11,7 +11,7 @@ dL_true = params.d_L_true;
 di_true = params.d_i_true;
 
 for k = 1:len
-    [~, ~, ~, ~, ~, ~, dL_hat_k, d_hat_k] = unpack_state(x(k,:)', n);
+    [~, ~, ~, ~, ~, dL_hat_k, d_hat_k] = unpack_state(x(k,:)', n);
 
     dL_err_norm(k) = norm(dL_hat_k - dL_true);
 

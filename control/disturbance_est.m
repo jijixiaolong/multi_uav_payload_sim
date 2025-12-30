@@ -1,65 +1,58 @@
-function [dL_hat_dot, d_hat_dot] = disturbance_est(x, params, ev, e_omega_i)
+function [dL_hat_dot, d_hat_dot] = disturbance_est(params, e, ev, e_omega_i, M, q, omega, dL_hat, d_hat)
 % DISTURBANCE_EST Disturbance estimation (Eq 35, 36)
 %   Calculates the derivatives of the disturbance estimates.
 %
 %   Inputs:
-%   x: State vector
 %   params: Parameters
-%   ev: Velocity error
-%   e_omega_i: Cable angular velocity error
-%
-%   Outputs:
-%   dL_hat_dot: Derivative of payload disturbance estimate
-%   d_hat_dot: Derivative of quadrotor disturbance estimates
+%   e, ev: Payload errors
+%   e_omega_i: Angular velocity errors (3xn)
+%   M: Precomputed mass matrix
+%   q: Normalized cable directions (3xn)
+%   omega: Cable angular velocities (3xn)
+%   dL_hat: Payload disturbance estimate
+%   d_hat: Quadrotor disturbance estimates (3xn)
 
 n = params.n;
-[~, ~, ~, ~, q, ~, dL_hat, d_hat] = unpack_state(x, n);
 
-% dV4/dev = dV1/dev = beta*sigma(e) + ev (Approx)
-% We need e. Let's assume we can calculate it or pass it.
-% For now, let's use a simplified dV4/dev = ev (if e is small).
-% Better: Recalculate e.
-[pL, vL, ~, ~, ~, ~, ~, ~] = unpack_state(x, n);
-% We need pd, dpd.
-% This function needs more inputs to be accurate.
-% Let's assume ev is passed, but we need e for dV4/dev.
-% Let's assume dV4/dev is passed directly?
-% Or calculate it.
+% dV4/dev = dV1/dev = beta*sigma(e) + ev
+dV1_dev = params.beta * sat(e) + ev;
 
-% Let's assume we pass dV4_dev (which is dV3_dev approx?)
-% Actually, dV4/dev = dV3/dev.
-% And dV4/de_omega_i = dV3/de_omega_i.
+% dV3/dev
+homega_li = params.homega / params.li;
+sum_term = zeros(3, 1);
+for i = 1:n
+    sum_term = sum_term + homega_li * hat(omega(:,i))' * e_omega_i(:,i);
+end
+dV3_dev = dV1_dev - sum_term;
 
-% Let's recalculate dV4_dev here if we have pd.
-% Since we don't have pd, we rely on inputs.
-% Let's assume ev contains the necessary info or we pass dV4_dev.
-% Let's change input to dV4_dev.
+% Precompute M \ dV3_dev once
+M_inv_dV3_dev = M \ dV3_dev;
 
-% But wait, the function signature in system_dynamics needs to be consistent.
-% In system_dynamics, we call controller_wrapper.
-% We can calculate dV4_dev in controller_wrapper and pass it.
+% dL_hat_dot (Eq 35)
+y_L = params.hdL * M_inv_dV3_dev;
+dL_hat_dot = proj(y_L, dL_hat, params.dL_max);
 
-% Let's implement the projection logic.
-
-% Proj(y, d_hat)
-% If ||d_hat|| < d_max or (||d_hat|| >= d_max and y'*d_hat <= 0)
-%   return y
-% else
-%   return y - (y'*d_hat * d_hat) / ||d_hat||^2
-
-% dL_hat_dot
-% y_L = h_dL * M^-1 * (dV4/dev)^T
-% But dV4/dev is row vector.
-
-% Let's assume inputs are:
-% dV4_dev: 3x1 vector (transposed)
-% dV4_de_omega_i: 3xn matrix
-
-% We need to update the function signature in the next step or assume inputs.
-% Let's assume inputs are passed correctly.
-
-dL_hat_dot = zeros(3, 1);
+% d_hat_dot (Eq 36)
 d_hat_dot = zeros(3, n);
+inv_mi_li = 1 / (params.mi * params.li);
+inv_li = 1 / params.li;
 
-% Placeholder return
+for i = 1:n
+    dV3_de_omega_i = params.homega * e_omega_i(:,i);
+
+    y_i = params.hdi * (inv_mi_li * dV3_de_omega_i - inv_li * q(:,i) * (q(:,i)' * M_inv_dV3_dev));
+    d_hat_dot(:,i) = proj(y_i, d_hat(:,i), params.di_max);
+end
+
+end
+
+function out = proj(y, d_hat, d_max)
+% Projection operator
+norm_d_sq = sum(d_hat.^2);
+norm_d = sqrt(norm_d_sq);
+if norm_d < d_max || (y' * d_hat <= 0)
+    out = y;
+else
+    out = y - (y' * d_hat / norm_d_sq) * d_hat;
+end
 end
