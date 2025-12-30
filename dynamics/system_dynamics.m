@@ -1,142 +1,144 @@
 function dx = system_dynamics(t, x, params)
-% SYSTEM_DYNAMICS 完整系统状态微分 dx = f(x,u)
+% 系统动力学状态微分方程 dx = f(x, u)
 %
-%   输入:
-%   t: 时间
-%   x: 状态向量
-%   params: 参数结构体
+% 输入:
+%   t      - 当前时间
+%   x      - 状态向量 [pL; vL; R(:); q; omega; dL_hat; d_hat]
+%   params - 系统参数结构体
 %
-%   输出:
-%   dx: 状态导数
+% 输出:
+%   dx - 状态导数向量
 
-% 解包状态（状态中不包含 Omega）
 n = params.n;
 
-% 检查输入状态是否有 NaN 或 Inf（ODE 求解器可能在探索时产生）
+% 数值安全检查
 if any(~isfinite(x))
-    % 返回零导数，让 ODE 求解器减小步长
     dx = zeros(size(x));
     return;
 end
 
+% 解包状态
 [pL, vL, R, q, omega, dL_hat, d_hat] = unpack_state(x, n);
 
-% 保持旋转矩阵正交，抑制积分漂移导致的数值爆炸
+% 数值稳定性处理
 R = reorthonormalize_R(R);
+q = normalize_cable_directions(q);
 
-% 归一化每根缆绳方向，防止数值漂移（向量化）
-q_norms = sqrt(sum(q.^2, 1));
-% 防止除以零
-q_norms(q_norms < 1e-10) = 1;
-q = q ./ q_norms;
-
-% 期望轨迹与高阶导数
+% 获取期望轨迹
 [pd, dpd, d2pd, d3pd, d4pd] = trajectory(t);
 
-% 预计算矩阵 M（向量化计算）
-
+% 计算惯性矩阵 M
 M = params.mL * eye(3) + params.mi * (q * q') + 1e-8 * eye(3);
 
-% 调用控制器（传递所有预解包的状态变量，避免重复 unpack_state）
-% 控制器返回：
-% T: 各机推力大小 (1xn)
-% Omega_cmd: 命令角速度 (3xn)
-% dL_hat_dot, d_hat_dot: 扰动估计导数
-[T, Omega_cmd, dL_hat_dot, d_hat_dot] = controller_wrapper(params, pd, dpd, d2pd, d3pd, d4pd, M, pL, vL, R, q, omega, dL_hat, d_hat);
+% 控制律
+[~, ~, f_di, dL_hat_dot, d_hat_dot] = compute_control(...
+    params, pd, dpd, d2pd, d3pd, d4pd, M, pL, vL, R, q, omega, dL_hat, d_hat);
 
 % 动力学计算
+[dpL, dvL] = payload_dynamics(params, M, q, omega, f_di, vL);
+[dq, domega] = cable_dynamics(params, q, omega, f_di, dvL);
+dR = attitude_dynamics(n, f_di);
 
-% 1. 载荷动力学 (Eq 8)
-% M * vL_dot = sum( (q_i' * f_i) * q_i ) + d_L + mL * g * e3
-% f_i = -T_i * R_i * e3（推力向量）
-
-% 向量化推力计算
-e3 = [0;0;1];
-f = zeros(3, n);
-for i = 1:n
-    f(:,i) = -T(i) * R(:,:,i) * e3;
-end
-
-% 向量化力分量计算（无循环）
-% 计算各力在缆绳方向的投影系数: (q_i' * f_i) 和 (q_i' * d_i)
-f_proj = sum(q .* f, 1);                    % 1×n: 推力投影系数
-d_proj = sum(q .* params.d_i_true, 1);      % 1×n: 扰动投影系数
-omega_norm_sq = sum(omega.^2, 1);           % 1×n: ||omega_i||^2
-
-% 合并系数: (f_proj + d_proj - mi*li*||omega||^2)
-mi = params.mi; li = params.li;
-coeff = f_proj + d_proj - mi * li * omega_norm_sq;  % 1×n
-
-% 求和: sum_i(coeff_i * q_i)
-sum_terms = q * coeff';                     % 3×1
-
-d_L_true = params.d_L_true;
-
-% 按 Eq 8 求解 vL_dot，重力项在逆矩阵外
-% NED 中重力为 [0;0;g]
-dvL = M \ (sum_terms + d_L_true) + params.g * e3;
-dpL = vL;
-
-% 2. 缆绳动力学 (Eq 9) - 向量化
-% 利用 cross() 支持批量列计算: S(q)*v = cross(q, v)
-
-g_e3 = params.g * e3;
-dvL_minus_g = dvL - g_e3;
-
-% term1: (1/li) * cross(q_i, dvL_minus_g) 对所有 i
-dvL_minus_g_mat = repmat(dvL_minus_g, 1, n);        % 3×n
-term1_all = (1/li) * cross(q, dvL_minus_g_mat);     % 3×n
-
-% term2: (1/(mi*li)) * cross(q_i, f_i + d_i)
-f_plus_d = f + params.d_i_true;                     % 3×n
-term2_all = (1/(mi*li)) * cross(q, f_plus_d);       % 3×n
-
-domega = term1_all - term2_all;                     % 3×n: 缆绳角加速度
-dq = cross(omega, q);                               % 3×n: q̇ = ω × q
-
-% 3. 姿态运动学 (Eq 1c)
-% R_dot = R * S(Omega)
-% 这里假设 Omega_cmd 可被完美跟踪
-dR = zeros(3,3,n);
-for i = 1:n
-    dR(:,:,i) = R(:,:,i) * hat(Omega_cmd(:,i));
-end
-
-% 打包导数（无 Omega 导数）
+% 打包导数
 dx = pack_state(dpL, dvL, dR, dq, domega, dL_hat_dot, d_hat_dot);
 
 end
 
-function [T, Omega_cmd, dL_hat_dot, d_hat_dot] = controller_wrapper(params, pd, dpd, d2pd, d3pd, d4pd, M, pL, vL, R, q, omega, dL_hat, d_hat)
-% 传递所有预解包的状态变量，避免重复 unpack_state
+%% 动力学子模块
 
-% 1. 载荷位置控制
-[f_dL, e, ev] = payload_ctrl(params, pd, dpd, d2pd, M, pL, vL, q, dL_hat, d_hat);
+function [dpL, dvL] = payload_dynamics(params, M, q, omega, f_di, vL)
+% 载荷动力学 (Eq 8): M * dvL = sum((q'*f)*q) + d_L + m_L*g*e3
 
-% 2. 力分配
-f_qdi = force_allocation(params, f_dL, q, omega);
+    e3 = [0; 0; 1];
 
-% 3. 缆绳姿态控制
-[f_di_perp, omega_di, dot_omega_di, e_qi, e_omega_i] = cable_ctrl(params, f_dL, e, ev, dpd, d2pd, d3pd, q, omega, d_hat);
+    % 向量化力投影计算
+    f_proj = sum(q .* f_di, 1);                      % 1×n
+    d_proj = sum(q .* params.d_i_true, 1);           % 1×n
+    omega_norm_sq = sum(omega.^2, 1);                % 1×n
 
-% 4. 姿态控制
-[Omega_cmd, T] = attitude_ctrl(params, f_qdi, f_di_perp, omega_di, dot_omega_di, e_qi, e_omega_i, ev, e, M, R, q, omega);
+    % 合成力系数
+    coeff = f_proj + d_proj - params.mi * params.li * omega_norm_sq;
+    sum_force = q * coeff';                          % 3×1
 
-% 5. 扰动估计
-[dL_hat_dot, d_hat_dot] = disturbance_est(params, e, ev, e_omega_i, M, q, omega, dL_hat, d_hat);
+    % 求解加速度 (NED坐标系，重力向下为正)
+    dvL = M \ (sum_force + params.d_L_true) + params.g * e3;
+    dpL = vL;
+end
+
+function [dq, domega] = cable_dynamics(params, q, omega, f_di, dvL)
+% 缆绳动力学 (Eq 9): domega = (1/l)*cross(q, dvL-g*e3) - (1/(m*l))*cross(q, f+d)
+
+    e3 = [0; 0; 1];
+
+    % 向量化交叉积计算
+    dvL_minus_g = dvL - params.g * e3;
+    dvL_mat = repmat(dvL_minus_g, 1, params.n);
+
+    term1 = (1/params.li) * cross(q, dvL_mat);
+    term2 = (1/(params.mi * params.li)) * cross(q, f_di + params.d_i_true);
+
+    domega = term1 - term2;
+    dq = cross(omega, q);
+end
+
+function dR = attitude_dynamics(n, f_di)
+% 姿态动力学 (简化: 瞬时跟踪推力方向)
+
+    dR = zeros(3, 3, n);
+    % 简化模型: 姿态瞬间对齐推力方向，变化率为零
+end
+
+%% 控制模块
+
+function [T, Omega_cmd, f_di, dL_hat_dot, d_hat_dot] = compute_control(...
+    params, pd, dpd, d2pd, d3pd, d4pd, M, pL, vL, R, q, omega, dL_hat, d_hat)
+% 分层控制架构
+
+    % 1. 载荷位置控制
+    [f_dL, e, ev] = payload_ctrl(params, pd, dpd, d2pd, M, pL, vL, q, dL_hat, d_hat);
+
+    % 2. 力分配
+    f_qdi = force_allocation(params, f_dL, q, omega);
+
+    % 3. 缆绳姿态控制
+    [f_di_perp, omega_di, dot_omega_di, e_qi, e_omega_i] = ...
+        cable_ctrl(params, f_dL, e, ev, dpd, d2pd, d3pd, q, omega, d_hat);
+
+    % 4. 姿态控制
+    [Omega_cmd, T, f_di] = attitude_ctrl(params, f_qdi, f_di_perp, ...
+        omega_di, dot_omega_di, e_qi, e_omega_i, ev, e, M, R, q, omega);
+
+    % 5. 扰动估计 (简化模型中禁用)
+    dL_hat_dot = zeros(3, 1);
+    d_hat_dot = zeros(3, params.n);
+end
+
+%% 辅助函数
+
+function q_norm = normalize_cable_directions(q)
+% 归一化缆绳方向向量，防止数值漂移
+
+    q_norms = sqrt(sum(q.^2, 1));
+    q_norms(q_norms < 1e-10) = 1;  % 防止除零
+    q_norm = q ./ q_norms;
 end
 
 function R_out = reorthonormalize_R(R_in)
-% 使用极分解保持旋转矩阵正交，防止长期仿真时的漂移
-n = size(R_in, 3);
-R_out = R_in;
-for i = 1:n
-    [U, ~, V] = svd(R_in(:,:,i));
-    Ri = U * V';
-    if det(Ri) < 0
-        U(:,3) = -U(:,3);
+% 使用SVD极分解保持旋转矩阵正交性
+
+    n = size(R_in, 3);
+    R_out = R_in;
+
+    for i = 1:n
+        [U, ~, V] = svd(R_in(:,:,i));
         Ri = U * V';
+
+        % 确保行列式为+1 (右手系)
+        if det(Ri) < 0
+            U(:,3) = -U(:,3);
+            Ri = U * V';
+        end
+
+        R_out(:,:,i) = Ri;
     end
-    R_out(:,:,i) = Ri;
-end
 end

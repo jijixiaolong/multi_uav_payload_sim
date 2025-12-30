@@ -164,38 +164,60 @@ title('Y 方向');
 legend('实际', '期望', 'Location', 'best');
 grid on;
 
-%% 子图6: Z方向位置和跟踪误差 (右下)
+%% 子图6: 各UAV高度曲线 (右下)
 subplot(2,3,6);
 hold on;
 
-% 计算误差
-error_all = pL_all - pd_all;
-error_norm = sqrt(sum(error_all.^2, 2));
+% 计算各UAV高度 (NED坐标系，高度 = -Z)
+h_uav_all = zeros(N, n);
+for k = 1:N
+    for i = 1:n
+        h_uav_all(k, i) = -p_uav_all(k, 3, i);  % 高度 = -Z
+    end
+end
 
-yyaxis left;
-plot(t, pL_all(:,3), 'b-', 'LineWidth', 1.5);
-plot(t, pd_all(:,3), 'b--', 'LineWidth', 1);
-ylabel('Z [m]');
+% 绘制各UAV高度曲线
+for i = 1:n
+    plot(t, h_uav_all(:, i), '-', 'LineWidth', 1.5, 'Color', uav_colors{i}, ...
+         'DisplayName', sprintf('UAV%d', i));
+end
 
-yyaxis right;
-plot(t, error_norm * 100, 'r-', 'LineWidth', 1.5);  % 转换为 cm
-ylabel('误差 [cm]');
+% 绘制载荷高度（参考线）
+h_payload = -pL_all(:, 3);
+plot(t, h_payload, 'k--', 'LineWidth', 1, 'DisplayName', '载荷');
 
 xlabel('时间 [s]');
-title('Z 方向 & 跟踪误差');
-legend('Z实际', 'Z期望', '误差', 'Location', 'best');
+ylabel('高度 [m]');
+title('各UAV高度变化');
+legend('Location', 'best');
 grid on;
 
 %% 添加总标题
 sgtitle(sprintf('多无人机载荷运输仿真 (t = 0 ~ %.2f s, %d 架UAV)', t(end), n));
 
 %% 打印统计信息
+% 计算跟踪误差
+error_all = pL_all - pd_all;
+error_norm = sqrt(sum(error_all.^2, 2));
+
+% 计算UAV高度统计
+h_mean_all = mean(h_uav_all, 1);  % 各UAV平均高度
+h_std_all = std(h_uav_all, 0, 1);  % 各UAV高度标准差
+h_diff_init = max(h_uav_all(1,:)) - min(h_uav_all(1,:));  % 初始高度差
+h_diff_final = max(h_uav_all(end,:)) - min(h_uav_all(end,:));  % 最终高度差
+
 fprintf('\n========== 仿真结果统计 ==========\n');
 fprintf('仿真时长: %.2f s\n', t(end));
 fprintf('数据点数: %d\n', N);
 fprintf('最大跟踪误差: %.4f m (%.2f cm)\n', max(error_norm), max(error_norm)*100);
 fprintf('最终跟踪误差: %.4f m (%.2f cm)\n', error_norm(end), error_norm(end)*100);
 fprintf('平均跟踪误差: %.4f m (%.2f cm)\n', mean(error_norm), mean(error_norm)*100);
+fprintf('\n--- UAV高度统计 ---\n');
+for i = 1:n
+    fprintf('UAV%d: 平均高度 %.3f m, 标准差 %.4f m\n', i, h_mean_all(i), h_std_all(i));
+end
+fprintf('初始高度差: %.2f cm\n', h_diff_init * 100);
+fprintf('最终高度差: %.2f cm\n', h_diff_final * 100);
 fprintf('===================================\n');
 
 end

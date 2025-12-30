@@ -21,12 +21,14 @@ function [f_di_perp, omega_di, dot_omega_di, e_qi, e_omega_i] = cable_ctrl(param
 n = params.n;
 
 % 期望缆绳配置 q_di（论文 Wang et al. 2024）- 向量化
-% 方位角: ψdi = (i-2) × 60° = [-60°, 0°, 60°]
+% q_i 指向: 载荷 → 无人机
+% NED坐标系中，无人机在载荷上方（z坐标更负），但 q_z = (pL_z - p_i_z)/li > 0
+% 配置：水平均匀分布（相差120°），天顶角θ_d = 40°
 theta_d = params.theta_d;
-psi_di = deg2rad(((1:n) - 2) * 60);        % 1×n: [-60°, 0°, 60°]
-q_di = [cos(psi_di) .* sin(theta_d);       % 3×n: 期望缆绳方向
-    sin(psi_di) .* sin(theta_d);
-    cos(theta_d) * ones(1, n)];
+psi_di = deg2rad((0:n-1) * 120);           % 1×n: [0°, 120°, 240°]（均匀分布）
+q_di = [sin(theta_d) * cos(psi_di);        % 3×n: 期望缆绳方向
+        sin(theta_d) * sin(psi_di);
+        cos(theta_d) * ones(1, n)];        % z分量为正
 
 % vLn 名义加速度 (Eq 26) - 严格按论文公式
 % dot_vLn := -σ(e) - k2·σ(β·σ(e) + ev) + p̈_d
@@ -72,15 +74,14 @@ for i = 1:n
     S_qi = hat(q(:,i));
     S2_qi = S_qi * S_qi;                % S²(q_i) = q_i*q_i^T - I
 
-    % 括号内各项
+    % 括号内各项（移除扰动补偿 term3）
     term1 = inv_li * S2_qi * dot_vLn_minus_g;       % 动力学项
     term2 = -S_qi * dot_omega_di(:,i);              % 角加速度前馈
-    term3 = inv_mi_li * d_hat(:,i);                 % 扰动补偿
     term4 = cross(dq(:,i), omega_err(:,i));         % 科氏力项
     term5 = hq_homega * e_qi(:,i);                  % 方向误差反馈
     term6 = komega_homega * e_omega_i(:,i);         % 角速度误差反馈
 
-    bracket = term1 + term2 + term3 + term4 + term5 + term6;
+    bracket = term1 + term2 + term4 + term5 + term6;
     f_di_perp(:,i) = mi_li * S2_qi * bracket;
 end
 

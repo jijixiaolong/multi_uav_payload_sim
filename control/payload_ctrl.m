@@ -21,11 +21,12 @@ ep = pL - pd;
 ev = vL - dpd;
 e = params.k1 * (ep + params.beta * ev);
 
-% Control Law (Eq 14) - 严格按论文公式
+% Control Law (简化版本 - 无扰动估计)
+% f_dL = σ(e) + k2·σ(β·σ(e) + ev) + gc3 - p̈d
 sat_e = sat(e);
-f_dL = sat_e ...                                        % σ(e) 位置误差反馈
-     + params.k2 * sat(params.beta * sat_e + ev) ...    % k2·σ(β·σ(e) + ev) 速度误差反馈
-     + params.g * [0;0;1] ...                           % +g·c3 重力项（论文原文）
-     - d2pd;                                            % -p̈_d 前馈
-% 注：扰动补偿由自适应估计器处理，暂不加入
+
+f_dL = sat_e ...                                        % σ(e)
+     + params.k2 * sat(params.beta * sat_e + ev) ...    % k2·σ(β·σ(e) + ev)
+     + params.g * [0;0;1] ...                           % +g·c3
+     - d2pd;                                            % -p̈_d
 end

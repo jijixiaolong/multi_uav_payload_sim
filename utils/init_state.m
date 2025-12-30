@@ -18,20 +18,23 @@ n = p.n;
 pL0 = pd0;
 vL0 = dpd0;
 
-% 期望/初始缆绳方向
-% 论文 Wang et al. 2024, Section VI:
-% qdi = [cos(ψdi)sin(θd), sin(ψdi)sin(θd), cos(θd)]ᵀ
-% 其中 θd = 40°, ψdi = (i-2) × 60° = [-60°, 0°, 60°]
-theta_d = p.theta_d;  % 天顶角：缆绳与垂直方向的夹角
+% 初始缆绳方向：直接使用期望配置（确保对称性和高度一致）
+% q_i 指向：载荷 → 无人机
+% NED坐标系：无人机在上方（z更负），但 q_z = (pL_z - p_i_z)/li > 0
+% 配置：水平均匀分布（相差120°），天顶角40°
+% 策略：直接从期望配置开始，避免初始大幅调整导致的不对称
+theta_init = p.theta_d;  % 使用期望天顶角40°作为初值
 q_all = zeros(3,n);
 omega_all = zeros(3,n);
 
 for i = 1:n
-    % 方位角: (i-2) × 60° = [-60°, 0°, 60°] (论文配置)
-    % 三架无人机在载荷前方和两侧呈扇形分布
-    psi_di = deg2rad((i-2) * 60);
-    q_di = [cos(psi_di)*sin(theta_d); sin(psi_di)*sin(theta_d); cos(theta_d)];
-    q_all(:,i) = q_di / norm(q_di);
+    % 方位角: ψ_i = (i-1) × 120° = [0°, 120°, 240°]（水平均匀分布）
+    psi_i = deg2rad((i-1) * 120);
+    % 球坐标转笛卡尔：q = [sin(θ)cos(ψ), sin(θ)sin(ψ), cos(θ)]
+    q_i = [sin(theta_init)*cos(psi_i);
+           sin(theta_init)*sin(psi_i);
+           cos(theta_init)];
+    q_all(:,i) = q_i / norm(q_i);
     omega_all(:,i) = [0; 0; 0];
 end
 
@@ -42,33 +45,10 @@ M = p.mL * eye(3) + p.mi * (q_all * q_all') + 1e-8 * eye(3);
 dL_hat0 = [0; 0; 0];
 d_hat0 = zeros(3,n);
 
-% 初始误差为零
-e = [0; 0; 0];
-ev = [0; 0; 0];
-
-% 调用控制器计算初始期望力
-[f_dL, ~, ~] = payload_ctrl(p, pd0, dpd0, d2pd0, M, pL0, vL0, q_all, dL_hat0, d_hat0);
-f_qdi = force_allocation(p, f_dL, q_all, omega_all);
-[f_di_perp, ~, ~, ~, ~] = cable_ctrl(p, f_dL, e, ev, dpd0, d2pd0, d3pd0, q_all, omega_all, d_hat0);
-
-% 计算每架无人机的期望力和期望推力方向
-f_di = f_qdi + f_di_perp;
-
+% 简化模型：直接使用单位姿态矩阵（因为姿态不参与动力学）
+% 姿态矩阵在简化模型中仅用于记录，不影响动力学计算
 e3 = [0; 0; 1];
-R_all = zeros(3,3,n);
-
-for i = 1:n
-    % 期望推力方向: r_di = -f_di / ||f_di||
-    f_di_norm = norm(f_di(:,i));
-    if f_di_norm > 1e-6
-        r_di = -f_di(:,i) / f_di_norm;
-    else
-        r_di = e3;
-    end
-
-    % 构建旋转矩阵，使 R_i * e3 = r_di
-    R_all(:,:,i) = rotation_from_z_to_target(e3, r_di);
-end
+R_all = repmat(eye(3), [1, 1, n]);  % 所有UAV初始姿态为单位阵
 
 % 打包状态
 x0 = pack_state(pL0, vL0, R_all, q_all, omega_all, dL_hat0, d_hat0);
