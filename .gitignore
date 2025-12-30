@@ -1,0 +1,23 @@
+# MATLAB临时和结果文件
+*.mat
+*.fig
+*.asv
+*.slxc
+
+# 仿真结果目录
+results/
+*.csv
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*~
+
+# 备份文件
+*.bak
+*.old
