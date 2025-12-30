@@ -1,4 +1,4 @@
-function [f_dL, e, ev] = payload_ctrl(params, pd, dpd, d2pd, ~, pL, vL, ~, ~, ~)
+function [f_dL, e, ev] = payload_ctrl(params, pd, dpd, d2pd, M, pL, vL, q, dL_hat, d_hat)
 % PAYLOAD_CTRL Payload outer loop control (Eq 14)
 %   Calculates the desired force f_dL for the payload.
 %

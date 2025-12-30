@@ -6,9 +6,10 @@ function [pd, dpd, d2pd, d3pd, d4pd] = trajectory(t)
 %   'line'      - 直线轨迹（沿X轴）
 %   'rectangle' - 矩形轨迹（圆角）
 %   'circle'    - 圆形轨迹
+%   'clelia'    - Clelia曲线（论文Wang et al. 2024, Eq.39）
 
 % ========== 选择轨迹类型 ==========
-traj_type = 'line';  % 'line', 'rectangle', 'circle'
+traj_type = 'clelia';  % 'line', 'rectangle', 'circle', 'clelia'
 
 % 公共参数
 z0 = -2;  % 高度 (NED: 负值表示向上, -2表示2m高度)
@@ -51,6 +52,11 @@ switch traj_type
     case 'rectangle'
         % 矩形轨迹（圆角过渡）
         [pd, dpd, d2pd, d3pd, d4pd] = rectangle_trajectory(t, z0);
+
+    case 'clelia'
+        % Clelia曲线（论文 Wang et al. 2024, Eq.39）
+        % 3D螺旋曲线，恒定速度 3 m/s
+        [pd, dpd, d2pd, d3pd, d4pd] = trajectory_clelia(t);
 
     otherwise
         error('Unknown trajectory type: %s', traj_type);

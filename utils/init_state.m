@@ -19,17 +19,17 @@ pL0 = pd0;
 vL0 = dpd0;
 
 % 期望/初始缆绳方向
-% 三架无人机均匀分布在载荷正上方，呈等边三角形
-% 方位角: 90°, 210°, 330° (或等效 90°, -150°, -30°)
-% 这样载荷在三角形的正中心
+% 论文 Wang et al. 2024, Section VI:
+% qdi = [cos(ψdi)sin(θd), sin(ψdi)sin(θd), cos(θd)]ᵀ
+% 其中 θd = 40°, ψdi = (i-2) × 60° = [-60°, 0°, 60°]
 theta_d = p.theta_d;  % 天顶角：缆绳与垂直方向的夹角
 q_all = zeros(3,n);
 omega_all = zeros(3,n);
 
 for i = 1:n
-    % 方位角: 90° + (i-1)*120° = [90°, 210°, 330°]
-    % 使载荷位于三角形中心
-    psi_di = deg2rad(90 + (i-1)*120);
+    % 方位角: (i-2) × 60° = [-60°, 0°, 60°] (论文配置)
+    % 三架无人机在载荷前方和两侧呈扇形分布
+    psi_di = deg2rad((i-2) * 60);
     q_di = [cos(psi_di)*sin(theta_d); sin(psi_di)*sin(theta_d); cos(theta_d)];
     q_all(:,i) = q_di / norm(q_di);
     omega_all(:,i) = [0; 0; 0];

@@ -20,10 +20,10 @@ function [f_di_perp, omega_di, dot_omega_di, e_qi, e_omega_i] = cable_ctrl(param
 
 n = params.n;
 
-% 期望缆绳配置 q_di（固定对称配置）- 向量化
-% 方位角: 90°, 210°, 330° - 使载荷位于三角形中心
+% 期望缆绳配置 q_di（论文 Wang et al. 2024）- 向量化
+% 方位角: ψdi = (i-2) × 60° = [-60°, 0°, 60°]
 theta_d = params.theta_d;
-psi_di = deg2rad(90 + ((1:n) - 1) * 120);  % 1×n: [90°, 210°, 330°]
+psi_di = deg2rad(((1:n) - 2) * 60);        % 1×n: [-60°, 0°, 60°]
 q_di = [cos(psi_di) .* sin(theta_d);       % 3×n: 期望缆绳方向
     sin(psi_di) .* sin(theta_d);
     cos(theta_d) * ones(1, n)];
